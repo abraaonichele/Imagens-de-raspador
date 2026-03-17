@@ -8,9 +8,6 @@ import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
 try:
@@ -32,6 +29,8 @@ class EANImageScraper:
         self.output_dir = output_dir
         self.max_retries = max(1, int(max_retries))
         self.security_reload_attempts = max(1, int(security_reload_attempts))
+        self.image_lookup_timeout = 3.0
+        self.image_poll_interval = 0.15
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
@@ -39,6 +38,7 @@ class EANImageScraper:
         ]
         self.missing_eans = []
         self.missing_eans_file_path = os.path.join(self.output_dir, "eans_sem_imagem.txt")
+        self.chrome_driver_path = ChromeDriverManager().install()
 
         self._setup_directory()
         self.driver = self._init_driver()
@@ -50,12 +50,13 @@ class EANImageScraper:
 
     def _init_driver(self):
         chrome_options = Options()
+        chrome_options.page_load_strategy = "eager"
         chrome_options.add_argument(f"user-agent={random.choice(self.user_agents)}")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option("useAutomationExtension", False)
 
-        service = Service(ChromeDriverManager().install())
+        service = Service(self.chrome_driver_path)
         driver = webdriver.Chrome(service=service, options=chrome_options)
 
         # Mesmo ajuste usado no script de domingo.
@@ -140,11 +141,47 @@ class EANImageScraper:
             except Exception:
                 self.driver.get(f"{self.base_url}{ean}")
 
-            self._human_delay(3, 6)
+            self._human_delay(0.5, 1.2)
             if not self._looks_like_security_page():
                 logging.info(f"Bloqueio liberado para EAN {ean} após recarregar.")
                 return True
         return False
+
+    def _find_image_url_fast(self):
+        selectors = [
+            "#product-image img",
+            ".product-main-image img",
+            "img.product-edit-image",
+            "img[src*='images.barcodelookup.com']",
+        ]
+
+        # Uma única chamada JS por ciclo costuma ser mais rápida que vários find_elements.
+        find_script = """
+            const selectors = arguments[0];
+            for (const selector of selectors) {
+                const elements = document.querySelectorAll(selector);
+                for (const element of elements) {
+                    const src = element.currentSrc || element.src || element.getAttribute('src');
+                    if (src) return src;
+                }
+            }
+            return '';
+        """
+
+        end_time = time.monotonic() + self.image_lookup_timeout
+        while time.monotonic() < end_time:
+            if self._looks_like_security_page():
+                return ""
+            try:
+                candidate = self.driver.execute_script(find_script, selectors)
+                if candidate:
+                    return candidate
+            except Exception:
+                pass
+
+            time.sleep(self.image_poll_interval)
+
+        return ""
 
     def process_ean(self, ean):
         logging.info(f"Iniciando busca para o EAN: {ean}")
@@ -152,7 +189,7 @@ class EANImageScraper:
         for attempt in range(1, self.max_retries + 1):
             try:
                 self.driver.get(f"{self.base_url}{ean}")
-                self._human_delay(3, 6)
+                self._human_delay(0.2, 0.6)
 
                 if self._looks_like_security_page():
                     recovered = self._try_reload_after_block(ean)
@@ -160,29 +197,10 @@ class EANImageScraper:
                         logging.warning(
                             f"Bloqueio de segurança persistiu no EAN {ean} (tentativa {attempt}/{self.max_retries})."
                         )
-                        self._human_delay(4, 8)
+                        self._human_delay(0.6, 1.2)
                         continue
 
-                wait = WebDriverWait(self.driver, 10)
-                selectors = [
-                    "#product-image img",
-                    ".product-main-image img",
-                    "img.product-edit-image",
-                    "img[src*='images.barcodelookup.com']",
-                ]
-
-                img_url = ""
-                for selector in selectors:
-                    try:
-                        img_element = wait.until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                        )
-                        candidate = img_element.get_attribute("src")
-                        if candidate:
-                            img_url = candidate
-                            break
-                    except Exception:
-                        pass
+                img_url = self._find_image_url_fast()
 
                 if img_url:
                     if self.save_image(img_url, ean):
@@ -198,7 +216,7 @@ class EANImageScraper:
                 logging.error(
                     f"Erro inesperado ao processar EAN {ean} (tentativa {attempt}/{self.max_retries}): {e}"
                 )
-                self._human_delay(2, 4)
+                self._human_delay(0.4, 0.9)
 
         return False
 
@@ -220,7 +238,7 @@ class EANImageScraper:
                     self._restart_driver()
                 else:
                     self._register_missing_ean(ean)
-                self._human_delay(2, 5)
+                self._human_delay(0.05, 0.2)
         finally:
             self._write_missing_eans_file()
             self.driver.quit()
