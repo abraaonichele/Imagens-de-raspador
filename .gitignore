@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+*.pyc
+scraping_log.log
+.chrome_profile_barcodelookup/
