@@ -1,5 +1,34 @@
-.venv/
+# Python
 __pycache__/
 *.pyc
-scraping_log.log
+*.pyo
+*.pyd
+
+# Virtualenvs
+.venv/
+venv/
+
+# Secrets / local config
+.env
+
+# Selenium profile/cache local
 .chrome_profile_barcodelookup/
+
+# Logs
+scraping_log.log
+*.log
+
+# Generated output files
+imagens_ean/
+eans_sem_imagem.txt
+[0-9]*.jpg
+[0-9]*.jpeg
+[0-9]*.png
+[0-9]*.webp
+[0-9]*.gif
+[0-9]*.bmp
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
